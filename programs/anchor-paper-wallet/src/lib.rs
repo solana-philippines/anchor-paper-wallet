@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 
 declare_id!("8krRoqrVBKMzaYCJNNB9gVPgfT5sp2b7J4jpSiuf9n6U");
 
-pub fn transfer_lamports(from: AccountInfo, to: AccountInfo, amount: u64) -> Result<()> {
+pub fn transfer_lamports(from: &AccountInfo, to: &AccountInfo, amount: u64) -> Result<()> {
 
   require!(
     **from.try_borrow_lamports()? >= amount,
@@ -24,30 +24,45 @@ pub mod anchor_paper_wallet {
 
     pub fn store(ctx: Context<Store>, code: String) -> Result<()> {
         let holder = &mut ctx.accounts.holder;
+        let signer = &mut ctx.accounts.authority;
 
         // Only uninitialized can be stored in
         require!(!holder.stored, PaperWalletError::NonEmptyStore);
 
-        msg!("BEFORE bump: {}, stored: {}", holder.bump, holder.stored);
+        // transfer lamports
+        let instruction = anchor_lang::solana_program::system_instruction::transfer(
+          &signer.key(),
+          &holder.key(),
+          signer.try_lamports()?
+        );
+
+        anchor_lang::solana_program::program::invoke(
+          &instruction,
+          &[
+            signer.to_account_info(),
+            holder.to_account_info()
+          ]
+        )?;
 
         // store canonical bump
         holder.bump = *ctx.bumps.get("holder").unwrap();
         holder.stored = true;
 
-        msg!("AFTER bump: {}, stored: {}", holder.bump, holder.stored);
 
         Ok(())
     }
 
-    pub fn redeem(ctx: Context<Redeem>, code: String) -> Result<()> {
+    pub fn redeem(ctx: Context<Redeem>, code: String, hash: Pubkey) -> Result<()> {
       let holder = &mut ctx.accounts.holder;
       let signer = &mut ctx.accounts.authority;
 
       // Only initialized can be redeemed
-      require!(holder.stored, PaperWalletError::NonEmptyStore);
+      require!(holder.stored, PaperWalletError::EmptyRedeem);
 
-      msg!("hotdog");
-      Ok(())
+      let holder_account_info = holder.to_account_info();
+
+      // returns Ok(()) / Err
+      transfer_lamports(&holder_account_info, &signer.to_account_info(), holder_account_info.try_lamports()?)
     }
 }
 
@@ -68,14 +83,15 @@ pub struct Store<'info> {
 }
 
 #[derive(Accounts)]
-#[instruction(code: String)]
+#[instruction(code: String, hash: Pubkey)]
 pub struct Redeem<'info> {
   #[account(
       mut,
-      seeds = [code.as_bytes(), authority.key.as_ref()],
+      seeds = [code.as_bytes(), hash.as_ref()],
       bump
   )]
   pub holder: Account<'info, Holder>,
+  #[account(mut)]
   pub authority: Signer<'info>,
 }
 

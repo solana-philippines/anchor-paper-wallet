@@ -40,6 +40,7 @@ describe("anchor-paper-wallet", () => {
 
     let holderState = await program.account.holder.fetch(holderPDA);
 
+    expect(await provider.connection.getBalance(signer.publicKey)).to.be.eql(0);
     expect(holderState.stored).to.be.true;
   });
 
@@ -83,18 +84,33 @@ describe("anchor-paper-wallet", () => {
     const testCode = "babaduk";
     const solana = 5;
 
-    const [holderPDA, _] = await anchor.web3.PublicKey.findProgramAddress(
-      [Buffer.from(testCode), signer.publicKey.toBuffer()],
-      program.programId
-    );
-
     const user1 = anchor.web3.Keypair.generate();
     const user2 = anchor.web3.Keypair.generate();
 
-    // request for airdrop
-    await provider.connection.requestAirdrop(
+    // request for airdrop for both accounts
+    const tx1 = await provider.connection.requestAirdrop(
       user1.publicKey,
       solana * anchor.web3.LAMPORTS_PER_SOL
+    );
+    const tx2 = await provider.connection.requestAirdrop(
+      user2.publicKey,
+      solana * anchor.web3.LAMPORTS_PER_SOL
+    );
+
+    await provider.connection.confirmTransaction(tx1);
+    await provider.connection.confirmTransaction(tx2);
+
+    const user1Balance = await provider.connection.getBalance(user1.publicKey);
+
+    const user2Balance = await provider.connection.getBalance(user2.publicKey);
+
+    // Check that balance was credited from airdrop
+    expect(user1Balance).to.be.greaterThan(0);
+    expect(user2Balance).to.be.greaterThan(0);
+
+    const [holderPDA, _] = await anchor.web3.PublicKey.findProgramAddress(
+      [Buffer.from(testCode), user1.publicKey.toBuffer()],
+      program.programId
     );
 
     // store user1 SOL
@@ -110,22 +126,65 @@ describe("anchor-paper-wallet", () => {
 
     // redeem stored sol into user2
     await program.methods
-      .redeem(testCode)
+      .redeem(testCode, user1.publicKey)
       .accounts({
-        authority: user1.publicKey,
+        authority: user2.publicKey,
         holder: holderPDA,
       })
       .signers([user2])
       .rpc();
 
-    const user1AccountInfo = await provider.connection.getAccountInfo(
-      user1.publicKey
-    );
+    const user1FinalBal = await provider.connection.getBalance(user1.publicKey);
 
-    const user2AccountInfo = await provider.connection.getAccountInfo(
-      user2.publicKey
-    );
+    const user2FinalBal = await provider.connection.getBalance(user2.publicKey);
+
+    expect(user1FinalBal).to.be.eql(0);
+    expect(user2FinalBal).to.be.greaterThan(0);
   });
 
-  it("It does not redeem on uninitialized account", async () => {});
+  it("It does not redeem on uninitialized account", async () => {
+    const testCode = "babaduk";
+    const solana = 5;
+
+    const user1 = anchor.web3.Keypair.generate();
+
+    // request for airdrop for both accounts
+    const tx1 = await provider.connection.requestAirdrop(
+      user1.publicKey,
+      solana * anchor.web3.LAMPORTS_PER_SOL
+    );
+
+    await provider.connection.confirmTransaction(tx1);
+
+    const user1Balance = await provider.connection.getBalance(user1.publicKey);
+
+    // Make sure balance was credited from airdrop
+    expect(user1Balance).to.be.greaterThan(0);
+
+    const [holderPDA, _] = await anchor.web3.PublicKey.findProgramAddress(
+      [Buffer.from(testCode), user1.publicKey.toBuffer()],
+      program.programId
+    );
+
+    // redeem stored sol into user1
+    try {
+      await program.methods
+        .redeem(testCode, user1.publicKey)
+        .accounts({
+          authority: user1.publicKey,
+          holder: holderPDA,
+        })
+        .signers([user1])
+        .rpc();
+    } catch (e) {
+      if (e.message.includes("AccountNotInitialized")) {
+        assert.isTrue(true);
+        return;
+      } else {
+        throw "Transaction failed, but not for expected error";
+      }
+    }
+
+    throw "Transaction didn't fail like it's supposed to";
+  });
 });
